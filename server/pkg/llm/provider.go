@@ -90,6 +90,8 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 		return NewAnthropic(cfg.APIKey, cfg.LLMModel), nil
 	case "gemini":
 		return NewGemini(cfg.APIKey, cfg.LLMModel), nil
+	case "9router":
+		return NewNineRouter(cfg.APIKey, cfg.LLMModel, cfg.LLMBaseURL), nil
 	case "gateway":
 		return NewGatewayFromConfig(cfg)
 	default:

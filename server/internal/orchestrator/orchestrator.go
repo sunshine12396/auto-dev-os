@@ -15,11 +15,13 @@ import (
 )
 
 type Orchestrator struct {
-	tasks     *repository.TaskRepo
-	workflows *repository.WorkflowRepo
-	agents    *AgentManager
-	runtime   sandbox.Runtime
-	prompts   *PromptAssembler
+	tasks       *repository.TaskRepo
+	workflows   *repository.WorkflowRepo
+	agents      *AgentManager
+	runtime     sandbox.Runtime
+	prompts     *PromptAssembler
+	memHooks    *MemoryHooks
+	learnEngine *LearningEngine
 }
 
 func NewOrchestrator(taskRepo *repository.TaskRepo, workflowRepo *repository.WorkflowRepo, agentManager *AgentManager, runtime sandbox.Runtime) *Orchestrator {
@@ -28,6 +30,14 @@ func NewOrchestrator(taskRepo *repository.TaskRepo, workflowRepo *repository.Wor
 
 func NewOrchestratorWithPrompt(taskRepo *repository.TaskRepo, workflowRepo *repository.WorkflowRepo, agentManager *AgentManager, runtime sandbox.Runtime, prompts *PromptAssembler) *Orchestrator {
 	return &Orchestrator{tasks: taskRepo, workflows: workflowRepo, agents: agentManager, runtime: runtime, prompts: prompts}
+}
+
+func (o *Orchestrator) SetMemoryHooks(hooks *MemoryHooks) {
+	o.memHooks = hooks
+}
+
+func (o *Orchestrator) SetLearningEngine(engine *LearningEngine) {
+	o.learnEngine = engine
 }
 
 func (o *Orchestrator) Execute(ctx context.Context, taskID string) (*models.WorkflowJob, error) {
@@ -124,6 +134,24 @@ func (o *Orchestrator) run(ctx context.Context, jobID string) {
 		_ = o.agents.Release(context.Background(), agent.ID)
 	}()
 
+	// Generate a unique session ID for this workflow run
+	sessionID := NewSessionID()
+
+	// Load relevant memories and inject into context
+	if o.memHooks != nil {
+		memories, err := o.memHooks.SessionStart(ctx, agent.ID, task)
+		if err == nil && len(memories) > 0 {
+			ctx = context.WithValue(ctx, memoriesCtxKey, memories)
+		}
+	}
+
+	// Compute and record agent confidence score
+	var confidence float64 = 0.5
+	if o.learnEngine != nil {
+		confidence = o.learnEngine.ComputeConfidence(ctx, agent.ID, task.Complexity)
+	}
+	_ = o.checkpoint(ctx, task.ID, &job.ID, "agent_confidence", MarshalConfidenceToCheckpoint(confidence))
+
 	engine := &workflow.Engine{
 		MaxParallel: 2,
 		OnEvent: func(ctx context.Context, event workflow.Event) error {
@@ -149,12 +177,60 @@ func (o *Orchestrator) run(ctx context.Context, jobID string) {
 				return err
 			}
 			o.log(ctx, task.ID, &job.ID, "info", fmt.Sprintf("step %s %s", event.StepID, event.Status))
+
+			// Record step observation memory
+			if o.memHooks != nil {
+				o.memHooks.PostStepRecord(ctx, agent.ID, task, sessionID, event.StepID, string(event.Status), event.Output)
+			}
 			return nil
 		},
 	}
 
 	def := workflow.DefaultWorkflow(o.stepRunners(task, agent))
 	result, err := engine.Run(ctx, def, map[string]any{"task_id": task.ID, "agent_id": agent.ID})
+
+	finalStatus := models.WorkflowJobStatusDone
+	var finalErr string
+	if err != nil {
+		if errors.Is(err, workflow.ErrPaused) {
+			finalStatus = models.WorkflowJobStatusPaused
+			finalErr = err.Error()
+		} else {
+			finalStatus = models.WorkflowJobStatusFailed
+			finalErr = err.Error()
+		}
+	}
+
+	// Update job state locally for evaluation
+	updatedJob, getErr := o.workflows.LatestByTaskID(ctx, task.ID)
+	if getErr != nil || updatedJob == nil {
+		updatedJob = job
+	}
+	updatedJob.Status = finalStatus
+	updatedJob.LastError = finalErr
+
+	// End memory session
+	if o.memHooks != nil {
+		o.memHooks.SessionEnd(ctx, agent.ID, task, sessionID, finalStatus)
+	}
+
+	// Post-task learning evaluation and improvements suggestions
+	if o.learnEngine != nil && finalStatus != models.WorkflowJobStatusPaused {
+		leCtx := context.Background()
+		leJob := updatedJob
+		leTask := task
+		go func() {
+			le := o.learnEngine
+			le.EvaluateOutcome(leCtx, leTask, leJob)
+			if finalStatus == models.WorkflowJobStatusDone {
+				le.DetectPatterns(leCtx, agent.ID)
+				le.SuggestRuleFromErrors(leCtx, agent.ID)
+			} else if finalStatus == models.WorkflowJobStatusFailed {
+				le.SuggestPromptPatch(leCtx, leTask, leJob)
+			}
+		}()
+	}
+
 	if err != nil {
 		if errors.Is(err, workflow.ErrPaused) {
 			_, _ = o.workflows.UpdateJob(ctx, job.ID, map[string]any{"status": models.WorkflowJobStatusPaused, "last_error": err.Error()})

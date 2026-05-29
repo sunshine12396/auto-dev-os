@@ -15,17 +15,21 @@ import (
 
 // Deps holds all service dependencies for the router.
 type Deps struct {
-	OrgSvc       *service.OrganizationService
-	ProjSvc      *service.ProjectService
-	RepoSvc      *service.RepositoryService
-	AgentSvc     *service.AgentService
-	TaskSvc      *service.TaskService
-	RuleSvc      *service.RuleService
-	SkillSvc     *service.SkillService
-	AnalyticsSvc *service.AnalyticsService
-	AuthSvc      *service.AuthService
-	Orch         *orchestrator.Orchestrator
-	WebPort      string
+	OrgSvc            *service.OrganizationService
+	ProjSvc           *service.ProjectService
+	RepoSvc           *service.RepositoryService
+	AgentSvc          *service.AgentService
+	TaskSvc           *service.TaskService
+	RuleSvc           *service.RuleService
+	SkillSvc          *service.SkillService
+	AnalyticsSvc      *service.AnalyticsService
+	DashboardSvc      *service.AnalyticsDashboardService
+	AuditSvc          *service.AuditService
+	AuthSvc           *service.AuthService
+	MemorySvc         *service.MemoryService
+	LearningSvc       *service.LearningService
+	Orch              *orchestrator.Orchestrator
+	WebPort           string
 }
 
 // NewRouter creates the chi router with all API v1 routes.
@@ -71,9 +75,14 @@ func NewRouter(d Deps) http.Handler {
 	ruleH := NewRuleHandler(d.RuleSvc)
 	skillH := NewSkillHandler(d.SkillSvc)
 	analyticsH := NewAnalyticsHandler(d.AnalyticsSvc)
+	dashboardH := NewAnalyticsDashboardHandler(d.DashboardSvc)
+	auditH := NewAuditHandler(d.AuditSvc)
+	prH := NewPRHandler(d.TaskSvc, d.AuditSvc)
 	authH := NewAuthHandler(d.AuthSvc)
 	webhookH := NewWebhookHandler(d.TaskSvc)
 	workflowH := NewWorkflowHandler(d.Orch)
+	memoryH := NewMemoryHandler(d.MemorySvc)
+	learningH := NewLearningHandler(d.LearningSvc)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public: auth endpoints
@@ -150,6 +159,13 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/agents/{agentID}/skills", skillH.AssignToAgent)
 			r.With(mw.RequireRole(models.UserRoleAdmin)).Delete("/agents/{agentID}", agentH.Delete)
 
+			// Phase 6: Episodic Memory
+			r.Get("/agents/{agentID}/memories", memoryH.ListByAgent)
+			r.Get("/agents/{agentID}/memories/search", memoryH.Search)
+
+			// Phase 6: Learning Suggestions
+			r.Get("/agents/{agentID}/suggestions", learningH.ListSuggestions)
+
 			r.Get("/tasks/{taskID}", taskH.GetByID)
 			r.Patch("/tasks/{taskID}", taskH.Update)
 			r.Delete("/tasks/{taskID}", taskH.Delete)
@@ -171,6 +187,27 @@ func NewRouter(d Deps) http.Handler {
 			r.With(mw.RequireRole(models.UserRoleAdmin)).Delete("/rules/{ruleID}", ruleH.Delete)
 
 			r.Get("/analytics/token-usage", analyticsH.TokenUsage)
+			r.Get("/analytics/overview", dashboardH.Overview)
+			r.Get("/analytics/agents", dashboardH.AgentPerformance)
+			r.Get("/analytics/tasks", dashboardH.TaskAnalytics)
+			r.Get("/analytics/workflows", dashboardH.WorkflowAnalytics)
+
+			// Audit logs
+			r.Get("/audit/logs", auditH.List)
+			r.Get("/audit/summary", auditH.Summary)
+
+			// PR approval/rejection
+			r.Post("/tasks/{taskID}/pr/approve", prH.Approve)
+			r.Post("/tasks/{taskID}/pr/reject", prH.Reject)
+
+			// Phase 6: Memory detail
+			r.Get("/memories/{memoryID}", memoryH.GetByID)
+			r.With(mw.RequireRole(models.UserRoleAdmin)).Delete("/memories/{memoryID}", memoryH.Delete)
+
+			// Phase 6: Learning suggestion review
+			r.Get("/suggestions/{suggestionID}", learningH.GetSuggestion)
+			r.Post("/suggestions/{suggestionID}/approve", learningH.ApproveSuggestion)
+			r.Post("/suggestions/{suggestionID}/reject", learningH.RejectSuggestion)
 
 			// Skills (global, not project-scoped)
 			r.Route("/skills", func(r chi.Router) {

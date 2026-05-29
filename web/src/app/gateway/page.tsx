@@ -18,12 +18,14 @@ function compactNumber(value: number) {
 
 export default function GatewayPage() {
   const session = useSession();
-  const { data: usage = [] } = useSWR(
+  const { data: usage } = useSWR(
     session ? ["token-usage", session.token] : null,
     ([, token]) => api.tokenUsage(token, 30),
   );
 
-  const totals = usage.reduce(
+  const safeUsage = usage || [];
+
+  const totals = safeUsage.reduce(
     (acc, item) => ({
       requests: acc.requests + item.requests,
       tokens: acc.tokens + item.total_tokens,
@@ -33,7 +35,7 @@ export default function GatewayPage() {
     { requests: 0, tokens: 0, cost: 0, latencyWeighted: 0 },
   );
   const avgLatency = totals.requests > 0 ? totals.latencyWeighted / totals.requests : 0;
-  const chartData = usage.map((item: TokenUsageSummary) => ({
+  const chartData = safeUsage.map((item: TokenUsageSummary) => ({
     name: `${item.provider}/${item.tier}`,
     tokens: item.total_tokens,
     cost: item.cost_usd,
@@ -94,7 +96,7 @@ export default function GatewayPage() {
             </tr>
           </thead>
           <tbody>
-            {usage.map((item) => (
+            {safeUsage.map((item) => (
               <tr key={`${item.provider}-${item.model}-${item.tier}`} className="border-b border-[var(--border)]/60">
                 <td className="px-4 py-3 font-mono text-[var(--accent)]">{item.provider}/{item.tier}</td>
                 <td className="px-4 py-3">{item.model}</td>
@@ -104,7 +106,7 @@ export default function GatewayPage() {
                 <td className="px-4 py-3">{Math.round(item.avg_latency_ms)} ms</td>
               </tr>
             ))}
-            {usage.length === 0 && (
+            {safeUsage.length === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-[var(--muted)]" colSpan={6}>
                   No gateway usage recorded yet.

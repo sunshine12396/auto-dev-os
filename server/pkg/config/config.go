@@ -33,6 +33,10 @@ type Config struct {
 	AnthropicAPIKey string `mapstructure:"ANTHROPIC_API_KEY"`
 	GeminiAPIKey    string `mapstructure:"GEMINI_API_KEY"`
 
+	// Generic OpenAI-Compatible Gateway/9router config
+	LLMBaseURL string `mapstructure:"LLM_BASE_URL"`
+	LLMAPIKey  string `mapstructure:"LLM_API_KEY"`
+
 	// APIKey is populated dynamically based on LLMProvider
 	APIKey string
 
@@ -64,6 +68,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("SERVER_PORT", "32080")
 	viper.SetDefault("WEB_PORT", "32300")
 	viper.SetDefault("LLM_PROVIDER", "openai")
+	viper.SetDefault("LLM_BASE_URL", "")
 	viper.SetDefault("LLM_FAST_MODEL", "gpt-4o-mini")
 	viper.SetDefault("LLM_BALANCED_MODEL", "gpt-4o")
 	viper.SetDefault("LLM_POWERFUL_MODEL", "gpt-4o")
@@ -104,12 +109,20 @@ func Load() (*Config, error) {
 			cfg.LLMModel = "gemini-2.5-pro"
 		}
 		cfg.APIKey = cfg.GeminiAPIKey
+	case "9router":
+		if cfg.LLMModel == "" {
+			cfg.LLMModel = "balanced"
+		}
+		if cfg.LLMBaseURL == "" {
+			cfg.LLMBaseURL = "http://localhost:20128/v1"
+		}
+		cfg.APIKey = cfg.LLMAPIKey
 	case "gateway":
 		if cfg.OpenAIAPIKey == "" && cfg.AnthropicAPIKey == "" && cfg.GeminiAPIKey == "" {
 			return nil, fmt.Errorf("LLM_PROVIDER=gateway requires at least one provider API key")
 		}
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: openai, anthropic, gemini, gateway)", cfg.LLMProvider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: openai, anthropic, gemini, 9router, gateway)", cfg.LLMProvider)
 	}
 
 	if cfg.DatabaseURL == "" {

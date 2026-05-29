@@ -59,6 +59,11 @@ func run() error {
 	workflowRepo := repository.NewWorkflowRepo(db)
 	secretRepo := repository.NewSecretRepo(db)
 	analyticsRepo := repository.NewAnalyticsRepo(db)
+	dashboardRepo := repository.NewAnalyticsDashboardRepo(db)
+	auditRepo := repository.NewAuditRepo(db)
+	memoryRepo := repository.NewMemoryRepo(db)
+	edgeRepo := repository.NewKnowledgeEdgeRepo(db)
+	suggestionRepo := repository.NewLearningSuggestionRepo(db)
 
 	if _, err := service.NewSecretService(secretRepo, cfg.JWTSecret); err != nil {
 		return err
@@ -75,6 +80,15 @@ func run() error {
 	)
 	orch := orchestrator.NewOrchestratorWithPrompt(taskRepo, workflowRepo, agentManager, sandboxRuntime, promptAssembler)
 
+	// Phase 6: Memory & Learning
+	memorySvc := service.NewMemoryService(memoryRepo, edgeRepo)
+	learningSvc := service.NewLearningService(suggestionRepo, ruleRepo)
+	memoryHooks := orchestrator.NewMemoryHooks(memorySvc)
+	learningEngine := orchestrator.NewLearningEngine(memorySvc, learningSvc, taskRepo)
+	// Attach hooks to orchestrator
+	orch.SetMemoryHooks(memoryHooks)
+	orch.SetLearningEngine(learningEngine)
+
 	deps := handler.Deps{
 		OrgSvc:       service.NewOrganizationService(orgRepo),
 		ProjSvc:      service.NewProjectService(projRepo, service.NewSeederService(ruleRepo, skillRepo)),
@@ -84,7 +98,11 @@ func run() error {
 		RuleSvc:      service.NewRuleService(ruleRepo),
 		SkillSvc:     service.NewSkillService(skillRepo),
 		AnalyticsSvc: service.NewAnalyticsService(analyticsRepo),
+		DashboardSvc: service.NewAnalyticsDashboardService(dashboardRepo),
+		AuditSvc:     service.NewAuditService(auditRepo),
 		AuthSvc:      service.NewAuthService(authRepo, cfg.JWTSecret),
+		MemorySvc:    memorySvc,
+		LearningSvc:  learningSvc,
 		Orch:         orch,
 		WebPort:      cfg.WebPort,
 	}
